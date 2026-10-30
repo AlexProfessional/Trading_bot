@@ -18,7 +18,6 @@ async def listen_group(exchange, symbols_group):
                         latest_tickers[symbol] = {'bid': ticker['bid'], 'ask': ticker['ask'], 'spread': ticker['ask'] - ticker['bid']}
                         database.save_tick(symbol, ticker['bid'], ticker['ask'], ticker['ask'] - ticker['bid'])
             except Exception:
-                # Игнорируем ошибки WebSocket, просто ждем и переподключаемся
                 await asyncio.sleep(5)
     except asyncio.CancelledError:
         pass
@@ -41,11 +40,10 @@ async def run_scanner():
                     if ticker.get('baseVolume') and ticker.get('last'):
                         usdt_pairs[symbol] = ticker['baseVolume'] * ticker['last']
 
-        # ОПТИМИЗАЦИЯ: Берем всего 5 монет для слабого Render
-        top_pairs = sorted(usdt_pairs, key=usdt_pairs.get, reverse=True)[:5]
+        # Берем Топ-10 монет (оптимально для Render)
+        top_pairs = sorted(usdt_pairs, key=usdt_pairs.get, reverse=True)[:10]
         await notifier.send_msg(f"🔍 Отобрано Топ-{len(top_pairs)} фьючерсов. Начинаем анализ...")
 
-        # Слушаем группами (тут будет 1 группа из 5 монет)
         groups = [top_pairs[i:i + 5] for i in range(0, len(top_pairs), 5)]
         tasks = [asyncio.create_task(listen_group(exchange, group)) for group in groups]
 
@@ -54,6 +52,24 @@ async def run_scanner():
         while True:
             now = datetime.now()
 
+            # === ПРОВЕРКА СТОП-ЛОССОВ И ТЕЙК-ПРОФИТОВ (Каждую секунду) ===
+            open_trades = database.get_open_trades()
+            for t in open_trades:
+                symbol = t['symbol']
+                if symbol in latest_tickers:
+                    current_price = latest_tickers[symbol]['bid']
+
+                    # Проверка Stop-Loss
+                    if current_price <= t['sl']:
+                        success, msg = trader.sell(symbol, current_price, reason="🚨 СТОП-ЛОСС")
+                        if success: await notifier.send_msg(msg)
+
+                    # Проверка Take-Profit
+                    elif current_price >= t['tp']:
+                        success, msg = trader.sell(symbol, current_price, reason="🎯 ТЕЙК-ПРОФИТ")
+                        if success: await notifier.send_msg(msg)
+
+            # === АНАЛИЗ ИИ (Раз в 30 секунд) ===
             if now.timestamp() - last_analysis_time > 30:
                 last_analysis_time = now.timestamp()
 
@@ -77,6 +93,7 @@ async def run_scanner():
 
                     if result["action"] == "BUY":
                         positions = database.get_open_trades()
+                        # Проверяем, что такой сделки еще нет
                         if not any(p['symbol'] == c['symbol'] for p in positions):
                             success, msg = trader.buy(c['symbol'], c['bid'])
                             if success: await notifier.send_msg(msg)
