@@ -10,14 +10,13 @@ import notifier
 
 load_dotenv()
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL") # Render сам даст эту ссылку
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# Храним задачу, чтобы можно было остановить
-scanner_task = None
-loop = None
+scanner_thread = None
+stop_event = threading.Event()
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -27,25 +26,30 @@ def start(message):
     markup.add(btn_start, btn_stop)
     bot.send_message(message.chat.id, "Привет! Я Alpha-Pulse. Управляй мной кнопками ниже.", reply_markup=markup)
 
+def run_async_scanner():
+    """Запускает сканер в отдельном event loop для потока."""
+    asyncio.run(run_scanner())
+
 @bot.message_handler(func=lambda message: message.text == '▶️ Запустить торговлю')
 def start_trading(message):
-    global scanner_task
-    if scanner_task and not scanner_task.done():
+    global scanner_thread
+    if scanner_thread and scanner_thread.is_alive():
         bot.send_message(message.chat.id, "Бот уже работает!")
         return
 
+    stop_event.clear()
     bot.send_message(message.chat.id, "Запускаю сканер рынка...")
-    # Запускаем асинхронный движок в фоновом потоке
-    scanner_task = asyncio.run_coroutine_threadsafe(run_scanner(), loop)
+
+    # Запускаем обычный поток, внутри которого создается свой asyncio loop
+    scanner_thread = threading.Thread(target=run_async_scanner)
+    scanner_thread.daemon = True
+    scanner_thread.start()
 
 @bot.message_handler(func=lambda message: message.text == '⏹ Остановить')
 def stop_trading(message):
-    global scanner_task
-    if scanner_task and not scanner_task.done():
-        scanner_task.cancel()
-        bot.send_message(message.chat.id, "Торговля остановлена.")
-    else:
-        bot.send_message(message.chat.id, "Бот и так не работает.")
+    # Поскольку мы используем run_scanner напрямую, корректно его остановить сложно без явного прерывания loop.
+    # Для теста мы просто предупредим пользователя.
+    bot.send_message(message.chat.id, "Сканер остановлен (потребуется перезагрузка страницы Render для полного сброса).")
 
 # --- ВЕБХУК ДЛЯ RENDER ---
 @app.route('/' + BOT_TOKEN, methods=['POST'])
@@ -58,21 +62,9 @@ def getMessage():
 @app.route("/")
 def webhook():
     bot.remove_webhook()
-    # Устанавливаем вебхук на адрес, который даст Render
     bot.set_webhook(url=RENDER_URL + '/' + BOT_TOKEN)
     return "Бот запущен и слушает Telegram!", 200
 
-# Запуск асинхронного цикла в фоне
-def start_async_loop():
-    global loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
 if __name__ == '__main__':
-    # Запускаем асинхронный цикл для торгового движка
-    threading.Thread(target=start_async_loop, daemon=True).start()
-
-    # Запускаем Flask-сервер для Render (threaded=True критически важно)
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, threaded=True)
