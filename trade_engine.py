@@ -1,5 +1,5 @@
 import asyncio
-import ccxt.async_support as ccxt  # <-- Используем обычный HTTP, а не WebSocket
+import ccxt.async_support as ccxt  # Используем обычный HTTP
 from datetime import datetime
 import ai_agent
 import database
@@ -46,33 +46,37 @@ async def run_scanner():
 
                 for symbol in top_pairs:
                     try:
-                        # Запрашиваем ордербук (цену) для каждой монеты
                         ob = await exchange.fetch_order_book(symbol, limit=1)
                         if ob['bids'] and ob['asks']:
                             bid = ob['bids'][0][0]
                             ask = ob['asks'][0][0]
                             spread = ask - bid
 
-                            # Сохраняем в базу
                             database.save_tick(symbol, bid, ask, spread)
 
-                            # Анализируем
                             history = database.get_recent_prices(symbol, limit=5)
                             if len(history) >= 3:
                                 change_percent = ((bid - history[0]) / history[0]) * 100
-                                if abs(change_percent) > 0.05:
+
+                                # ВРЕМЕННЫЙ ТЕСТ: Покупаем BTC принудительно
+                                if symbol == 'BTC/USDT:USDT':
+                                    print(f"📊 [ТЕСТ] Принудительный сигнал BUY для {symbol}")
+                                    result = {"action": "BUY", "confidence": 99, "reason": "Тестовая покупка"}
+                                elif abs(change_percent) > 0.05:
                                     print(f"📊 [DEBUG] Аномалия на {symbol}: {change_percent:.3f}%")
                                     result = ai_agent.analyze_market(symbol, bid, bid, spread, history)
+                                else:
+                                    result = {"action": "WAIT"}
 
-                                    if result["action"] == "BUY":
-                                        positions = database.get_open_trades()
-                                        if not any(p['symbol'] == symbol for p in positions):
-                                            success, msg = trader.buy(symbol, bid)
-                                            if success: await notifier.send_msg(msg)
-
-                                    elif result["action"] == "SELL":
-                                        success, msg = trader.sell(symbol, bid)
+                                if result["action"] == "BUY":
+                                    positions = database.get_open_trades()
+                                    if not any(p['symbol'] == symbol for p in positions):
+                                        success, msg = trader.buy(symbol, bid)
                                         if success: await notifier.send_msg(msg)
+
+                                elif result["action"] == "SELL":
+                                    success, msg = trader.sell(symbol, bid)
+                                    if success: await notifier.send_msg(msg)
                     except Exception as e:
                         print(f"❌ [DEBUG] Ошибка при запросе {symbol}: {e}")
 
