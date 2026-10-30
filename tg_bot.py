@@ -73,6 +73,6 @@ if __name__ == '__main__':
     # Запускаем асинхронный цикл для торгового движка
     threading.Thread(target=start_async_loop, daemon=True).start()
 
-    # Запускаем Flask-сервер для Render
+    # Запускаем Flask-сервер для Render (threaded=True критически важно)
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, threaded=True)
