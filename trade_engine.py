@@ -17,20 +17,26 @@ async def listen_group(exchange, symbols_group):
                     if ticker['bid'] and ticker['ask']:
                         latest_tickers[symbol] = {'bid': ticker['bid'], 'ask': ticker['ask'], 'spread': ticker['ask'] - ticker['bid']}
                         database.save_tick(symbol, ticker['bid'], ticker['ask'], ticker['ask'] - ticker['bid'])
-            except Exception:
+            except Exception as e:
+                print(f"⚠️ Ошибка в listen_group (WebSocket): {e}")
                 await asyncio.sleep(5)
     except asyncio.CancelledError:
         pass
 
 async def run_scanner():
+    print("🚀 [DEBUG] Внутри run_scanner: Старт")
     trader = PaperTrader()
     exchange = ccxtpro.bybit({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
 
     await notifier.send_msg(f"🚀 **Alpha-Pulse Запущен**\nБаланс: {trader.balance:.2f} USDT\nПлечо: x3")
+    print("🚀 [DEBUG] Сообщение в ТГ отправлено. Загружаем рынки...")
 
     try:
         await exchange.load_markets()
+        print("🚀 [DEBUG] Рынки загружены. Получаем тикеры...")
+
         tickers = await exchange.fetch_tickers()
+        print(f"🚀 [DEBUG] Тикеры получены (всего {len(tickers)}). Фильтруем...")
 
         usdt_pairs = {}
         for symbol, ticker in tickers.items():
@@ -40,38 +46,38 @@ async def run_scanner():
                     if ticker.get('baseVolume') and ticker.get('last'):
                         usdt_pairs[symbol] = ticker['baseVolume'] * ticker['last']
 
-        # Берем Топ-10 монет (оптимально для Render)
         top_pairs = sorted(usdt_pairs, key=usdt_pairs.get, reverse=True)[:10]
         await notifier.send_msg(f"🔍 Отобрано Топ-{len(top_pairs)} фьючерсов. Начинаем анализ...")
+        print(f"🚀 [DEBUG] Отобрано {len(top_pairs)} монет. Запускаем WebSocket...")
 
         groups = [top_pairs[i:i + 5] for i in range(0, len(top_pairs), 5)]
         tasks = [asyncio.create_task(listen_group(exchange, group)) for group in groups]
 
         last_analysis_time = 0
 
+        print("🚀 [DEBUG] Входим в главный цикл while True...")
         while True:
             now = datetime.now()
 
-            # === ПРОВЕРКА СТОП-ЛОССОВ И ТЕЙК-ПРОФИТОВ (Каждую секунду) ===
+            # Проверка SL и TP
             open_trades = database.get_open_trades()
             for t in open_trades:
                 symbol = t['symbol']
                 if symbol in latest_tickers:
                     current_price = latest_tickers[symbol]['bid']
 
-                    # Проверка Stop-Loss
                     if current_price <= t['sl']:
                         success, msg = trader.sell(symbol, current_price, reason="🚨 СТОП-ЛОСС")
                         if success: await notifier.send_msg(msg)
 
-                    # Проверка Take-Profit
                     elif current_price >= t['tp']:
                         success, msg = trader.sell(symbol, current_price, reason="🎯 ТЕЙК-ПРОФИТ")
                         if success: await notifier.send_msg(msg)
 
-            # === АНАЛИЗ ИИ (Раз в 30 секунд) ===
+            # Анализ ИИ
             if now.timestamp() - last_analysis_time > 30:
                 last_analysis_time = now.timestamp()
+                print(f"📊 [DEBUG] Прошло 30 секунд. Анализируем... (в памяти {len(latest_tickers)} монет)")
 
                 candidates = []
                 for symbol, data in latest_tickers.items():
@@ -81,19 +87,21 @@ async def run_scanner():
                         if abs(change_percent) > 0.1:
                             candidates.append({"symbol": symbol, "bid": data['bid'], "history": history})
 
+                print(f"📊 [DEBUG] Найдено {len(candidates)} аномалий для ИИ.")
                 candidates.sort(key=lambda x: abs(((x['bid'] - x['history'][0]) / x['history'][0]) * 100), reverse=True)
                 top_candidates = candidates[:2]
 
                 for c in top_candidates:
+                    print(f"📊 [DEBUG] Отправляем {c['symbol']} в ИИ...")
                     try:
                         result = ai_agent.analyze_market(c['symbol'], c['bid'], c['bid'], 0.1, c['history'])
+                        print(f"📊 [DEBUG] ИИ ответил: {result['action']}")
                     except Exception as e:
-                        print(f"Ошибка ИИ: {e}")
+                        print(f"❌ [DEBUG] Ошибка ИИ: {e}")
                         continue
 
                     if result["action"] == "BUY":
                         positions = database.get_open_trades()
-                        # Проверяем, что такой сделки еще нет
                         if not any(p['symbol'] == c['symbol'] for p in positions):
                             success, msg = trader.buy(c['symbol'], c['bid'])
                             if success: await notifier.send_msg(msg)
@@ -105,6 +113,7 @@ async def run_scanner():
             await asyncio.sleep(1)
 
     except Exception as e:
+        print(f"❌ [DEBUG] КРИТИЧЕСКАЯ ОШИБКА В run_scanner: {e}")
         await notifier.send_msg(f"⚠️ Ошибка в движке: {str(e)}")
     finally:
         await exchange.close()
