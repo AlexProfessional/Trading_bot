@@ -15,9 +15,7 @@ client = OpenAI(
     base_url="https://api.proxyapi.ru/v1"
 )
 
-
 def analyze_market(symbol, bid, ask, spread, history):
-    """Отправляет данные и историю в ИИ, возвращает JSON."""
     history_str = ", ".join([str(p) for p in history]) if history else "Нет данных"
 
     prompt = f"""
@@ -41,8 +39,7 @@ def analyze_market(symbol, bid, ask, spread, history):
         response = client.chat.completions.create(
             model="deepseek/deepseek-chat",
             messages=[
-                {"role": "system",
-                 "content": "Ты — холодный и расчетливый ИИ-трейдер. Ты отвечаешь только валидным JSON без лишних слов."},
+                {"role": "system", "content": "Ты — холодный и расчетливый ИИ-трейдер. Ты отвечаешь только валидным JSON без лишних слов."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.1,
