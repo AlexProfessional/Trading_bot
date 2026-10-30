@@ -7,6 +7,7 @@ from flask import Flask, request
 from dotenv import load_dotenv
 from trade_engine import run_scanner
 import notifier
+import database  # <-- ДОБАВИЛИ ИМПОРТ БАЗЫ
 
 load_dotenv()
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
@@ -14,6 +15,9 @@ RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
+
+# Инициализируем базу данных СРАЗУ при старте сервера
+database.init_db()  # <-- ДОБАВИЛИ ЭТУ СТРОКУ
 
 scanner_thread = None
 stop_event = threading.Event()
@@ -40,16 +44,13 @@ def start_trading(message):
     stop_event.clear()
     bot.send_message(message.chat.id, "Запускаю сканер рынка...")
 
-    # Запускаем обычный поток, внутри которого создается свой asyncio loop
     scanner_thread = threading.Thread(target=run_async_scanner)
     scanner_thread.daemon = True
     scanner_thread.start()
 
 @bot.message_handler(func=lambda message: message.text == '⏹ Остановить')
 def stop_trading(message):
-    # Поскольку мы используем run_scanner напрямую, корректно его остановить сложно без явного прерывания loop.
-    # Для теста мы просто предупредим пользователя.
-    bot.send_message(message.chat.id, "Сканер остановлен (потребуется перезагрузка страницы Render для полного сброса).")
+    bot.send_message(message.chat.id, "Сканер остановлен.")
 
 # --- ВЕБХУК ДЛЯ RENDER ---
 @app.route('/' + BOT_TOKEN, methods=['POST'])
