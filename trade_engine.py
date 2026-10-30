@@ -18,7 +18,7 @@ async def listen_group(exchange, symbols_group):
                         latest_tickers[symbol] = {'bid': ticker['bid'], 'ask': ticker['ask'], 'spread': ticker['ask'] - ticker['bid']}
                         database.save_tick(symbol, ticker['bid'], ticker['ask'], ticker['ask'] - ticker['bid'])
             except Exception:
-                # При обрыве связи с Bybit ждем 5 секунд и пробуем снова
+                # Игнорируем ошибки WebSocket, просто ждем и переподключаемся
                 await asyncio.sleep(5)
     except asyncio.CancelledError:
         pass
@@ -41,11 +41,12 @@ async def run_scanner():
                     if ticker.get('baseVolume') and ticker.get('last'):
                         usdt_pairs[symbol] = ticker['baseVolume'] * ticker['last']
 
-        # ОПТИМИЗАЦИЯ: Берем только 15 монет для бесплатного Render
-        top_pairs = sorted(usdt_pairs, key=usdt_pairs.get, reverse=True)[:15]
+        # ОПТИМИЗАЦИЯ: Берем всего 5 монет для слабого Render
+        top_pairs = sorted(usdt_pairs, key=usdt_pairs.get, reverse=True)[:5]
         await notifier.send_msg(f"🔍 Отобрано Топ-{len(top_pairs)} фьючерсов. Начинаем анализ...")
 
-        groups = [top_pairs[i:i + 10] for i in range(0, len(top_pairs), 10)]
+        # Слушаем группами (тут будет 1 группа из 5 монет)
+        groups = [top_pairs[i:i + 5] for i in range(0, len(top_pairs), 5)]
         tasks = [asyncio.create_task(listen_group(exchange, group)) for group in groups]
 
         last_analysis_time = 0
@@ -53,7 +54,6 @@ async def run_scanner():
         while True:
             now = datetime.now()
 
-            # ОПТИМИЗАЦИЯ: Спрашиваем ИИ раз в 30 секунд
             if now.timestamp() - last_analysis_time > 30:
                 last_analysis_time = now.timestamp()
 
