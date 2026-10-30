@@ -18,6 +18,7 @@ async def listen_group(exchange, symbols_group):
                         latest_tickers[symbol] = {'bid': ticker['bid'], 'ask': ticker['ask'], 'spread': ticker['ask'] - ticker['bid']}
                         database.save_tick(symbol, ticker['bid'], ticker['ask'], ticker['ask'] - ticker['bid'])
             except Exception:
+                # При обрыве связи с Bybit ждем 5 секунд и пробуем снова
                 await asyncio.sleep(5)
     except asyncio.CancelledError:
         pass
@@ -40,17 +41,20 @@ async def run_scanner():
                     if ticker.get('baseVolume') and ticker.get('last'):
                         usdt_pairs[symbol] = ticker['baseVolume'] * ticker['last']
 
-        top_50_pairs = sorted(usdt_pairs, key=usdt_pairs.get, reverse=True)[:50]
-        await notifier.send_msg(f"🔍 Отобрано Топ-{len(top_50_pairs)} фьючерсов. Начинаем анализ...")
+        # ОПТИМИЗАЦИЯ: Берем только 15 монет для бесплатного Render
+        top_pairs = sorted(usdt_pairs, key=usdt_pairs.get, reverse=True)[:15]
+        await notifier.send_msg(f"🔍 Отобрано Топ-{len(top_pairs)} фьючерсов. Начинаем анализ...")
 
-        groups = [top_50_pairs[i:i + 10] for i in range(0, len(top_50_pairs), 10)]
+        groups = [top_pairs[i:i + 10] for i in range(0, len(top_pairs), 10)]
         tasks = [asyncio.create_task(listen_group(exchange, group)) for group in groups]
 
         last_analysis_time = 0
 
         while True:
             now = datetime.now()
-            if now.timestamp() - last_analysis_time > 15:
+
+            # ОПТИМИЗАЦИЯ: Спрашиваем ИИ раз в 30 секунд
+            if now.timestamp() - last_analysis_time > 30:
                 last_analysis_time = now.timestamp()
 
                 candidates = []
@@ -58,17 +62,20 @@ async def run_scanner():
                     history = database.get_recent_prices(symbol, limit=5)
                     if len(history) >= 3:
                         change_percent = ((data['bid'] - history[0]) / history[0]) * 100
-                        if abs(change_percent) > 0.1: # Ищем изменения от 0.1%
+                        if abs(change_percent) > 0.1:
                             candidates.append({"symbol": symbol, "bid": data['bid'], "history": history})
 
                 candidates.sort(key=lambda x: abs(((x['bid'] - x['history'][0]) / x['history'][0]) * 100), reverse=True)
-                top_candidates = candidates[:2] # Берем 2 лучшие
+                top_candidates = candidates[:2]
 
                 for c in top_candidates:
-                    result = ai_agent.analyze_market(c['symbol'], c['bid'], c['bid'], 0.1, c['history'])
+                    try:
+                        result = ai_agent.analyze_market(c['symbol'], c['bid'], c['bid'], 0.1, c['history'])
+                    except Exception as e:
+                        print(f"Ошибка ИИ: {e}")
+                        continue
 
                     if result["action"] == "BUY":
-                        # Проверяем, нет ли уже открытой позиции
                         positions = database.get_open_trades()
                         if not any(p['symbol'] == c['symbol'] for p in positions):
                             success, msg = trader.buy(c['symbol'], c['bid'])
